@@ -37,6 +37,8 @@ The following commands must be installed:
 - Composer
 - SSH
 
+The repository's continuous-integration workflow also runs Bash syntax validation and ShellCheck on every push and pull request.
+
 GitHub CLI must be authenticated:
 
     gh auth login

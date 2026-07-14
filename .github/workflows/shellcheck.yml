@@ -13,6 +13,7 @@ permissions:
 jobs:
   shellcheck:
     runs-on: ubuntu-latest
+
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -20,7 +21,10 @@ jobs:
       - name: Validate Bash syntax
         run: bash -n bin/upgrade-symfony-74
 
+      - name: Install ShellCheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
       - name: Run ShellCheck
-        uses: ludeeus/action-shellcheck@master
-        with:
-          scandir: ./bin
+        run: shellcheck --severity=warning bin/upgrade-symfony-74

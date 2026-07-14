@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 The project follows Semantic Versioning.
 
+## 1.0.1 - 2026-07-14
+
+### Fixed
+
+- Documented intentional ShellCheck SC2016 suppressions for embedded PHP code
+- Updated GitHub Actions to fail only on ShellCheck warnings and errors
+- Replaced the third-party ShellCheck action with the distribution ShellCheck package
+
 ## 1.0.0 - 2026-07-14
 
 ### Added

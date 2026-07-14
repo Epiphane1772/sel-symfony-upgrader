@@ -103,6 +103,7 @@ if [ ! -f composer.json ] || [ ! -f composer.lock ]; then
     exit 1
 fi
 
+# shellcheck disable=SC2016
 if ! php -r '
 $data = json_decode(file_get_contents("composer.json"), true, 512, JSON_THROW_ON_ERROR);
 $packages = array_merge($data["require"] ?? [], $data["require-dev"] ?? []);
@@ -190,6 +191,7 @@ printf '\n%s\n' "VALIDATING COMPOSER FILES"
 
 composer validate --no-check-publish --check-lock
 
+# shellcheck disable=SC2016
 FRAMEWORK_VERSION="$(
     composer show symfony/framework-bundle --format=json |
     php -r '
