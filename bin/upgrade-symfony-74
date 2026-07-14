@@ -1,0 +1,321 @@
+#!/bin/bash
+
+set -Eeuo pipefail
+
+export GIT_PAGER=cat
+export PAGER=cat
+export COMPOSER_NO_INTERACTION=1
+export COMPOSER_MEMORY_LIMIT=-1
+
+if [ "$#" -ne 1 ]; then
+    printf '%s\n' "Usage: upgrade-symfony-74 OWNER/REPOSITORY"
+    exit 1
+fi
+
+REPOSITORY="$1"
+REPOSITORY_NAME="${REPOSITORY##*/}"
+PROJECT_DIR="$HOME/Projects/$REPOSITORY_NAME"
+REMOTE_URL="git@github.com:${REPOSITORY}.git"
+DATE_TAG="$(date +%Y-%m-%d)"
+BRANCH="security/symfony-7.4-${DATE_TAG}"
+
+case "$REPOSITORY" in
+    */*)
+        ;;
+    *)
+        printf '%s\n' "ERROR: Use OWNER/REPOSITORY format."
+        exit 1
+        ;;
+esac
+
+for COMMAND in git php composer gh ssh; do
+    if ! command -v "$COMMAND" >/dev/null 2>&1; then
+        printf 'ERROR: Required command is missing: %s\n' "$COMMAND"
+        exit 1
+    fi
+done
+
+if [ "$(php -r 'echo PHP_VERSION_ID;')" -lt 80200 ]; then
+    printf '%s\n' "ERROR: Symfony 7.4 requires PHP 8.2 or newer."
+    php --version
+    exit 1
+fi
+
+if ! gh auth status >/dev/null 2>&1; then
+    printf '%s\n' "ERROR: GitHub CLI is not authenticated."
+    exit 1
+fi
+
+SSH_OUTPUT="$(ssh -o BatchMode=yes -o ConnectTimeout=10 -T git@github.com 2>&1 || true)"
+
+if ! printf '%s\n' "$SSH_OUTPUT" | grep -q "successfully authenticated"; then
+    printf '%s\n' "ERROR: GitHub SSH authentication failed."
+    printf '%s\n' "$SSH_OUTPUT"
+    exit 1
+fi
+
+mkdir -p "$HOME/Projects"
+
+if [ -d "$PROJECT_DIR/.git" ]; then
+    cd "$PROJECT_DIR"
+
+    CURRENT_REMOTE="$(git remote get-url origin 2>/dev/null || true)"
+
+    case "$CURRENT_REMOTE" in
+        *"$REPOSITORY"*)
+            ;;
+        *)
+            printf 'ERROR: Existing directory belongs to another repository: %s\n' "$CURRENT_REMOTE"
+            exit 1
+            ;;
+    esac
+
+    if [ -n "$(git status --porcelain)" ]; then
+        printf '%s\n' "ERROR: Repository contains uncommitted changes."
+        git status --short
+        exit 1
+    fi
+
+    git fetch origin --prune
+else
+    git clone "$REMOTE_URL" "$PROJECT_DIR"
+    cd "$PROJECT_DIR"
+fi
+
+DEFAULT_BRANCH="$(git remote show origin | sed -n 's/.*HEAD branch: //p')"
+
+if [ -z "$DEFAULT_BRANCH" ]; then
+    if git show-ref --verify --quiet refs/remotes/origin/main; then
+        DEFAULT_BRANCH="main"
+    elif git show-ref --verify --quiet refs/remotes/origin/master; then
+        DEFAULT_BRANCH="master"
+    else
+        printf '%s\n' "ERROR: Could not determine the default branch."
+        exit 1
+    fi
+fi
+
+git checkout "$DEFAULT_BRANCH"
+git pull --ff-only origin "$DEFAULT_BRANCH"
+
+if [ ! -f composer.json ] || [ ! -f composer.lock ]; then
+    printf '%s\n' "ERROR: composer.json or composer.lock is missing."
+    exit 1
+fi
+
+if ! php -r '
+$data = json_decode(file_get_contents("composer.json"), true, 512, JSON_THROW_ON_ERROR);
+$packages = array_merge($data["require"] ?? [], $data["require-dev"] ?? []);
+exit(isset($packages["symfony/framework-bundle"]) ? 0 : 1);
+'; then
+    printf '%s\n' "ERROR: This is not a Symfony Framework project."
+    exit 1
+fi
+
+if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
+    git branch -D "$BRANCH"
+fi
+
+git checkout -b "$BRANCH"
+
+php <<'UPDATE_COMPOSER'
+<?php
+
+declare(strict_types=1);
+
+$file = 'composer.json';
+
+$data = json_decode(
+    file_get_contents($file),
+    true,
+    512,
+    JSON_THROW_ON_ERROR
+);
+
+$data['extra'] ??= [];
+$data['extra']['symfony'] ??= [];
+$data['extra']['symfony']['require'] = '7.4.*';
+
+foreach (['require', 'require-dev'] as $section) {
+    if (!isset($data[$section]) || !is_array($data[$section])) {
+        continue;
+    }
+
+    foreach ($data[$section] as $package => $constraint) {
+        if (!str_starts_with((string) $package, 'symfony/')) {
+            continue;
+        }
+
+        if ($package === 'symfony/flex' || !is_string($constraint)) {
+            continue;
+        }
+
+        if (preg_match('/(?:\^|~|>=|>|=)?\s*7\.[0123](?:\.\*|\.\d+)?/', $constraint) === 1) {
+            $data[$section][$package] = preg_replace(
+                '/(?:\^|~|>=|>|=)?\s*7\.[0123](?:\.\*|\.\d+)?/',
+                '^7.4',
+                $constraint
+            );
+        }
+    }
+}
+
+$result = file_put_contents(
+    $file,
+    json_encode(
+        $data,
+        JSON_PRETTY_PRINT |
+        JSON_UNESCAPED_SLASHES |
+        JSON_UNESCAPED_UNICODE |
+        JSON_THROW_ON_ERROR
+    ) . PHP_EOL
+);
+
+if ($result === false) {
+    echo "ERROR: Unable to write composer.json.\n";
+    exit(1);
+}
+UPDATE_COMPOSER
+
+printf '\n%s\n' "UPDATING DEPENDENCIES"
+
+APP_ENV=test APP_DEBUG=0 composer update \
+    --with-all-dependencies \
+    --minimal-changes \
+    --prefer-dist \
+    --optimize-autoloader \
+    --no-interaction
+
+printf '\n%s\n' "VALIDATING COMPOSER FILES"
+
+composer validate --no-check-publish --check-lock
+
+FRAMEWORK_VERSION="$(
+    composer show symfony/framework-bundle --format=json |
+    php -r '
+        $data = json_decode(stream_get_contents(STDIN), true, 512, JSON_THROW_ON_ERROR);
+        echo ltrim($data["versions"][0] ?? "", "v");
+    '
+)"
+
+case "$FRAMEWORK_VERSION" in
+    7.4.*)
+        printf 'Symfony FrameworkBundle: %s\n' "$FRAMEWORK_VERSION"
+        ;;
+    *)
+        printf 'ERROR: Symfony FrameworkBundle is %s instead of 7.4.x\n' "$FRAMEWORK_VERSION"
+        exit 1
+        ;;
+esac
+
+printf '\n%s\n' "SECURITY AUDIT"
+
+composer audit --locked --abandoned=report
+
+printf '\n%s\n' "REINSTALLING FROM LOCK FILE"
+
+rm -rf vendor
+
+APP_ENV=test APP_DEBUG=0 composer install \
+    --prefer-dist \
+    --optimize-autoloader \
+    --no-interaction
+
+printf '\n%s\n' "APPLICATION CHECKS"
+
+APP_ENV=test APP_DEBUG=0 php bin/console about
+APP_ENV=test APP_DEBUG=0 php bin/console lint:yaml config
+APP_ENV=test APP_DEBUG=0 php bin/console lint:container
+
+if [ -d templates ]; then
+    APP_ENV=test APP_DEBUG=0 php bin/console lint:twig templates
+fi
+
+printf '\n%s\n' "AUTOMATED TESTS"
+
+if [ -d tests ] && find tests -type f -name '*Test.php' -print -quit | grep -q .; then
+    if [ -f bin/phpunit ]; then
+        APP_ENV=test APP_DEBUG=0 php bin/phpunit
+    elif [ -f vendor/bin/phpunit ]; then
+        APP_ENV=test APP_DEBUG=0 php vendor/bin/phpunit
+    else
+        printf '%s\n' "ERROR: Tests exist but PHPUnit is unavailable."
+        exit 1
+    fi
+else
+    printf '%s\n' "WARNING: No PHPUnit tests were found."
+fi
+
+printf '\n%s\n' "CHANGED FILES"
+
+git status --short
+git diff --stat
+
+git add composer.json composer.lock
+
+if [ -f symfony.lock ]; then
+    git add symfony.lock
+fi
+
+if [ -d config ]; then
+    git add config
+fi
+
+if [ -f importmap.php ]; then
+    git add importmap.php
+fi
+
+if git diff --cached --quiet; then
+    printf '%s\n' "ERROR: No upgrade changes were produced."
+    exit 1
+fi
+
+git commit -m "security: upgrade Symfony dependencies to 7.4"
+git push --force-with-lease --set-upstream origin "$BRANCH"
+
+EXISTING_PR="$(
+    gh pr list \
+        --repo "$REPOSITORY" \
+        --head "$BRANCH" \
+        --state open \
+        --json url \
+        --jq '.[0].url // empty'
+)"
+
+if [ -z "$EXISTING_PR" ]; then
+    gh pr create \
+        --repo "$REPOSITORY" \
+        --base "$DEFAULT_BRANCH" \
+        --head "$BRANCH" \
+        --title "Security: upgrade Symfony dependencies to 7.4" \
+        --body "Upgrades the application to Symfony 7.4 LTS and updates vulnerable Composer dependencies.
+
+Validation completed:
+
+- Composer configuration valid
+- Composer security audit completed
+- Symfony FrameworkBundle upgraded to 7.4
+- YAML validation passed
+- Symfony service-container validation passed
+- Twig validation passed when templates were present
+- PHPUnit executed when tests were present
+
+Nothing was merged or deployed automatically."
+else
+    printf '%s\n' "An open pull request already exists:"
+    printf '%s\n' "$EXISTING_PR"
+fi
+
+printf '\n%s\n' "PULL REQUEST STATUS"
+
+gh pr view \
+    --repo "$REPOSITORY" \
+    "$BRANCH" \
+    --web=false
+
+printf '\n%s\n' "SUCCESS"
+printf 'Repository: %s\n' "$REPOSITORY"
+printf 'Local directory: %s\n' "$PROJECT_DIR"
+printf 'Branch: %s\n' "$BRANCH"
+printf '%s\n' "A pull request is ready for review."
+printf '%s\n' "Nothing was merged or deployed."
