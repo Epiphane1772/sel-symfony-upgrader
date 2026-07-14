@@ -1,0 +1,64 @@
+name: Bug report
+description: Report a reproducible problem
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: Thank you for reporting a problem.
+  - type: input
+    id: version
+    attributes:
+      label: Upgrader version
+      placeholder: v1.0.0
+    validations:
+      required: true
+  - type: input
+    id: operating-system
+    attributes:
+      label: Operating system
+      placeholder: macOS 26 or Ubuntu 24.04
+    validations:
+      required: true
+  - type: input
+    id: php-version
+    attributes:
+      label: PHP version
+      placeholder: PHP 8.2.30
+    validations:
+      required: true
+  - type: input
+    id: composer-version
+    attributes:
+      label: Composer version
+      placeholder: Composer 2.9.5
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Problem
+      description: Describe what happened.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Include the command and relevant sanitized output.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: checkboxes
+    id: secrets
+    attributes:
+      label: Safety confirmation
+      options:
+        - label: I removed passwords, tokens, private keys and private customer information.
+          required: true
